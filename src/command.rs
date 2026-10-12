@@ -1,8 +1,4 @@
-use std::{
-    collections::HashMap,
-    ffi::{CString, OsString},
-    path::Path,
-};
+use std::{collections::HashMap, ffi::OsString, path::Path};
 
 use crate::stdio::{Stderr, Stdin, Stdout};
 

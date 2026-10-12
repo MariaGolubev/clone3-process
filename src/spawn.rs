@@ -1,9 +1,9 @@
 use std::{
     collections::HashMap,
     ffi::{CString, OsString},
-    io,
+    io::{self, Read},
     os::{
-        fd::{FromRawFd, OwnedFd, RawFd},
+        fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
         unix::ffi::OsStrExt,
     },
 };
@@ -20,6 +20,10 @@ impl Command {
             pidfd: &mut pidfd as *mut RawFd as u64,
             ..Default::default()
         };
+
+        let (mut pipe_read, pipe_write) = crate::pipe::new()?;
+        let write_fd = pipe_write.into_owned_fd();
+        let write_raw = write_fd.as_raw_fd();
 
         let path = self.path()?;
         let current_dir = self.get_current_dir()?;
@@ -52,19 +56,39 @@ impl Command {
                     || self.stdout.apply() == -1
                     || self.stderr.apply() == -1
                 {
-                    libc::_exit(127);
+                    fail(write_raw);
                 }
                 if let Some(dir) = current_dir {
                     if libc::chdir(dir.as_ptr()) == -1 {
-                        libc::_exit(127);
+                        fail(write_raw);
                     }
                 }
                 libc::execve(path.as_ptr(), argv.as_ptr(), envp.as_ptr());
-                libc::_exit(127);
+                fail(write_raw);
             },
 
             pid => {
+                drop(write_fd);
                 let pidfd = unsafe { OwnedFd::from_raw_fd(pidfd) };
+
+                let mut buf = [0u8; 4];
+                let mut filled = 0;
+                while filled < buf.len() {
+                    match pipe_read.read(&mut buf[filled..]) {
+                        Ok(0) => break, // EOF: execve прошёл
+                        Ok(n) => filled += n,
+                        Err(error) => {
+                            let _ = kill_and_wait(pid);
+                            return Err(error);
+                        }
+                    }
+                }
+
+                if filled == buf.len() {
+                    // ребёнок упал до exec: забрать зомби и вернуть причину
+                    let _ = kill_and_wait(pid);
+                    return Err(io::Error::from_raw_os_error(i32::from_ne_bytes(buf)));
+                }
                 match Child::from_pid(pid, pidfd, self.kill_on_drop) {
                     Ok(child) => return Ok(child),
                     Err(error) => {
@@ -120,11 +144,11 @@ impl Command {
 #[inline]
 fn envp(env: HashMap<OsString, OsString>, env_clear: bool) -> io::Result<Vec<CString>> {
     let env = if env_clear {
+        env
+    } else {
         let mut parent_env = std::env::vars_os().collect::<HashMap<OsString, OsString>>();
         parent_env.extend(env);
         parent_env
-    } else {
-        env
     };
 
     let mut envp = Vec::with_capacity(env.len() + 1);
@@ -142,6 +166,16 @@ fn envp(env: HashMap<OsString, OsString>, env_clear: bool) -> io::Result<Vec<CSt
         envp.push(cstr);
     }
     Ok(envp)
+}
+
+#[inline]
+unsafe fn fail(fd: RawFd) -> ! {
+    unsafe {
+        let errno = *libc::__errno_location();
+        let bytes = errno.to_ne_bytes();
+        libc::write(fd, bytes.as_ptr().cast(), bytes.len());
+        libc::_exit(127)
+    }
 }
 
 #[inline]
