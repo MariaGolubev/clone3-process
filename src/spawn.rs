@@ -22,6 +22,7 @@ impl Command {
         };
 
         let path = self.path()?;
+        let current_dir = self.get_current_dir()?;
         let argv_storage = self.argv()?;
         let envp_storage = envp(self.env, self.env_clear)?;
         let argv = argv_storage
@@ -34,7 +35,6 @@ impl Command {
             .map(|entry| entry.as_ptr())
             .chain(std::iter::once(std::ptr::null()))
             .collect::<Vec<_>>();
-        let current_dir = self.get_current_dir()?;
 
         let pid = unsafe {
             libc::syscall(
