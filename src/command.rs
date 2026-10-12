@@ -1,4 +1,8 @@
-use std::{collections::HashMap, ffi::OsString};
+use std::{
+    collections::HashMap,
+    ffi::{CString, OsString},
+    path::Path,
+};
 
 use crate::stdio::{Stderr, Stdin, Stdout};
 
@@ -7,6 +11,8 @@ pub struct Command {
     pub(crate) arg0: Option<OsString>,
     pub(crate) args: Vec<OsString>,
     pub(crate) env: HashMap<OsString, OsString>,
+    pub(crate) env_clear: bool,
+    pub(crate) current_dir: Option<OsString>,
     pub(crate) stdin: Stdin,
     pub(crate) stdout: Stdout,
     pub(crate) stderr: Stderr,
@@ -20,6 +26,8 @@ impl Command {
             arg0: None,
             args: Vec::new(),
             env: HashMap::new(),
+            env_clear: false,
+            current_dir: None,
             stdin: Stdin::Inherit,
             stdout: Stdout::Inherit,
             stderr: Stderr::Inherit,
@@ -61,6 +69,23 @@ impl Command {
             envs.into_iter()
                 .map(|(key, value)| (key.into(), value.into())),
         );
+        self
+    }
+
+    pub fn env_clear(mut self) -> Self {
+        self.env_clear = true;
+        self.env.clear();
+        self
+    }
+
+    pub fn env_remove(mut self, key: impl Into<OsString>) -> Self {
+        self.env.remove(&key.into());
+        self
+    }
+
+    pub fn current_dir(mut self, dir: impl AsRef<Path>) -> Self {
+        let dir = dir.as_ref().as_os_str().to_owned();
+        self.current_dir = Some(dir);
         self
     }
 

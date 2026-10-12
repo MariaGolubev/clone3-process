@@ -1,5 +1,6 @@
 use std::{
-    ffi::CString,
+    collections::HashMap,
+    ffi::{CString, OsString},
     io,
     os::{
         fd::{FromRawFd, OwnedFd, RawFd},
@@ -22,7 +23,7 @@ impl Command {
 
         let path = self.path()?;
         let argv_storage = self.argv()?;
-        let envp_storage = self.envp()?;
+        let envp_storage = envp(self.env, self.env_clear)?;
         let argv = argv_storage
             .iter()
             .map(|arg| arg.as_ptr())
@@ -33,6 +34,7 @@ impl Command {
             .map(|entry| entry.as_ptr())
             .chain(std::iter::once(std::ptr::null()))
             .collect::<Vec<_>>();
+        let current_dir = self.get_current_dir()?;
 
         let pid = unsafe {
             libc::syscall(
@@ -51,6 +53,11 @@ impl Command {
                     || self.stderr.apply() == -1
                 {
                     libc::_exit(127);
+                }
+                if let Some(dir) = current_dir {
+                    if libc::chdir(dir.as_ptr()) == -1 {
+                        libc::_exit(127);
+                    }
                 }
                 libc::execve(path.as_ptr(), argv.as_ptr(), envp.as_ptr());
                 libc::_exit(127);
@@ -99,23 +106,42 @@ impl Command {
     }
 
     #[inline]
-    fn envp(&self) -> io::Result<Vec<CString>> {
-        let mut envp = Vec::with_capacity(self.env.len() + 1);
-        for (key, value) in &self.env {
-            let mut kv = key.clone().into_string().map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "invalid environment variable key",
-                )
-            })?;
-            kv.push('=');
-            kv.push_str(&value.to_string_lossy());
-            let cstr = CString::new(kv)
+    fn get_current_dir(&self) -> io::Result<Option<CString>> {
+        if let Some(dir) = &self.current_dir {
+            let cstr = CString::new(dir.as_os_str().as_bytes())
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-            envp.push(cstr);
+            Ok(Some(cstr))
+        } else {
+            Ok(None)
         }
-        Ok(envp)
     }
+}
+
+#[inline]
+fn envp(env: HashMap<OsString, OsString>, env_clear: bool) -> io::Result<Vec<CString>> {
+    let env = if env_clear {
+        let mut parent_env = std::env::vars_os().collect::<HashMap<OsString, OsString>>();
+        parent_env.extend(env);
+        parent_env
+    } else {
+        env
+    };
+
+    let mut envp = Vec::with_capacity(env.len() + 1);
+    for (key, value) in env {
+        let mut kv = key.clone().into_string().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid environment variable key",
+            )
+        })?;
+        kv.push('=');
+        kv.push_str(&value.to_string_lossy());
+        let cstr =
+            CString::new(kv).map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        envp.push(cstr);
+    }
+    Ok(envp)
 }
 
 #[inline]
